@@ -9,6 +9,10 @@ uint8_t button = NULL;
 unsigned long offTime = 0;
 uint8_t blinkPin = 13;
 bool blinkOn = false;
+//Serial
+char serialBuffer[256];
+char serialReading = '\0';
+uint8_t serialIndex = 0;
 //Lights
 uint8_t lowest = 2;
 uint8_t highest = 9;
@@ -29,8 +33,7 @@ int calib7 = 1023;
 
 void setup()
 {
-  Serial.begin(9600);
-  Serial.println("Started");
+  Serial.begin(115200);
   pinMode(blinkPin, OUTPUT);
   pinMode(2, OUTPUT);
   pinMode(3, OUTPUT);
@@ -43,14 +46,13 @@ void setup()
   irrecv.enableIRIn();
   //MOVE THIS
   randomLight();
-  ///MOVE THIS
-  Serial.println("Calibrating...");
   calibrate();
 }
 
 void loop() {
   checkIr();
   checkBlink();
+  checkSerial();
   doRoutine();
 }
 
@@ -140,6 +142,7 @@ void checkBlink() {
 void calibrate() {
   int reading = 1023;
   //Calibrate A0
+  Serial.print("\rCalibrating A0");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(0);
     if (reading < calib0) {
@@ -147,6 +150,7 @@ void calibrate() {
     }
   }
   //Calibrate A1
+  Serial.print("\rCalibrating A1");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(1);
     if (reading < calib1) {
@@ -154,6 +158,7 @@ void calibrate() {
     }
   }
   //Calibrate A2
+  Serial.print("\rCalibrating A2");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(2);
     if (reading < calib2) {
@@ -161,6 +166,7 @@ void calibrate() {
     }
   }
   //Calibrate A3
+  Serial.print("\rCalibrating A3");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(3);
     if (reading < calib3) {
@@ -168,6 +174,7 @@ void calibrate() {
     }
   }
   //Calibrate A4
+  Serial.print("\rCalibrating A4");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(4);
     if (reading < calib4) {
@@ -175,6 +182,7 @@ void calibrate() {
     }
   }
   //Calibrate A5
+  Serial.print("\rCalibrating A5");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(5);
     if (reading < calib5) {
@@ -182,6 +190,7 @@ void calibrate() {
     }
   }
   //Calibrate A6
+  Serial.print("\rCalibrating A6");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(6);
     if (reading < calib6) {
@@ -189,12 +198,14 @@ void calibrate() {
     }
   }
   //Calibrate A7
+  Serial.print("\rCalibrating A7");
   for (int start = millis(); millis() < start+250;) {
     reading = analogRead(7);
     if (reading < calib7) {
       calib7 = reading;
     }
   }
+  Serial.println();
   //DEBUG
   Serial.println("CAL: {");
   Serial.print("  0: ");
@@ -218,8 +229,6 @@ void calibrate() {
 
 void randomLight() {
   //DEBUG
-  Serial.print("OLDPIN: ");
-  Serial.println(currentLight);
   currentLight = random(lowest, 9);
   switch (currentLight) {
     case 2:
@@ -255,27 +264,23 @@ void randomLight() {
     currentCalib = &calib3;
     break;
   }
-  //DEBUG
-  Serial.println("NEW {");
-  Serial.print("  PIN: ");
-  Serial.println(currentLight);
-  Serial.print("  SEN: ");
-  Serial.println(currentSensor);
-  Serial.print("  CAL:");
-  Serial.println(*currentCalib);
-  Serial.println("}");
 }
 
 void doRoutine() {
   if (currentRoutine == 0) {
   } else if (currentRoutine == 1) {
+    int reading = analogRead(currentSensor);
+    if (millis()%100 == 0) {
+      Serial.print("\rValue: ");
+      Serial.print(reading);
+    }
     // if (millis()%1000 == 0) {
     //   Serial.print("Sensor A");
     //   Serial.print(currentSensor);
     //   Serial.print(": ");
     //   Serial.println(analogRead(currentSensor));
     // }
-    if (analogRead(currentSensor) < *currentCalib-2) {
+    if (reading < *currentCalib-2) {
       digitalWrite(currentLight, LOW);
       Serial.print("Turned off ");
       Serial.println(currentLight);
@@ -629,4 +634,24 @@ void doRoutine() {
       Serial.println(millis());
     }
   }
+}
+
+void checkSerial() {
+  if (Serial.available() > 0) {
+    serialReading = Serial.read();
+    if (serialReading == '\r') {
+      Serial.println();
+      serialBuffer[serialIndex] = '\0';
+      parseCommand(serialBuffer);
+      serialBuffer[0] = '\0';
+      serialIndex = 0;
+    } else {
+      Serial.print(serialReading);
+      serialBuffer[serialIndex] = serialReading;
+      serialIndex++;
+    }
+  }
+}
+
+void parseCommand(char command[256]) {
 }
