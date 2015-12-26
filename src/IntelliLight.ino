@@ -1,657 +1,861 @@
+//* Libraries *//
 #include <IRremote.h>
-//Pin Configuration
-const uint8_t recvPin = 11;
+//* Variables *//
 //IR Configuration
+const uint8_t recvPin = 11;
 IRrecv irrecv(recvPin);
 decode_results results;
-uint8_t button = NULL;
-//Async blink
-unsigned long offTime = 0;
-uint8_t blinkPin = 13;
-bool blinkOn = false;
+uint8_t button = 0;
 //Serial
-char serialBuffer[256];
+String serialBuffer = "";
 char serialReading = '\0';
-uint8_t serialIndex = 0;
+//Sensors
+int sensorLastReading = 0;
+int sensorReading = 0;
+unsigned long sensorNow = 0;
+unsigned long sensorLastTime = 0;
+uint8_t checkThisSensor = 16;
+uint8_t sensorCurrent = 0;
+int readings[30];
+uint8_t calib = 10;
 //Lights
-uint8_t lowest = 2;
-uint8_t highest = 9;
-uint8_t currentLight = NULL;
-uint8_t lastLight = NULL;
-uint8_t currentSensor = NULL;
-int * currentCalib = NULL;
-uint8_t currentRoutine = 1;
-//PINs
-int calib0 = 1023;
-int calib1 = 1023;
-int calib2 = 1023;
-int calib3 = 1023;
-int calib4 = 1023;
-int calib5 = 1023;
-int calib6 = 1023;
-int calib7 = 1023;
+uint8_t lightFirst = 2;
+uint8_t lightLast = 9;
+uint8_t lightCurrent = 0;
+uint8_t lightLastOn = 0;
+//Routines
+uint8_t currentRoutine = 0;
+unsigned long routineEnd = 0;
+unsigned long routineLightEnd = 0;
+unsigned long routineLightEndEnd = 0;
+bool routineLightOn = 0;
+//Divider
+double R1 = 807.0;
+double R2 = 220.0;
+double voltage = 0.0;
+const uint8_t redLed = 52;
+const uint8_t yellowLed = 53;
+const uint8_t greenLed = 50;
 
-void setup()
-{
-  Serial.begin(115200);
-  pinMode(blinkPin, OUTPUT);
-  pinMode(2, OUTPUT);
-  pinMode(3, OUTPUT);
-  pinMode(4, OUTPUT);
-  pinMode(5, OUTPUT);
-  pinMode(6, OUTPUT);
-  pinMode(7, OUTPUT);
-  pinMode(8, OUTPUT);
-  pinMode(9, OUTPUT);
+void setup() {
+  pinMode(52, OUTPUT);
+  pinMode(53, OUTPUT);
+  pinMode(50, OUTPUT);
   irrecv.enableIRIn();
-  //MOVE THIS
-  randomLight();
-  calibrate();
+  Serial.begin(115200);
+  Serial.print("\rIntelliLight v0.0.1\r\n");
+  Serial.print("ilc> ");
 }
 
 void loop() {
   checkIr();
-  checkBlink();
-  checkSerial();
-  doRoutine();
+  checkVoltage();
+  doRoutine ();
+  logSensor();
+  serialPrompt();
 }
 
 void checkIr() {
   if (irrecv.decode(&results)) {
     switch(results.value) {
-      case 0x100BCBD://Power
+      case 0x20DF10EF://Power
       button = 10;
       currentRoutine = 0;
-      digitalWrite(currentLight, LOW);
+      clearLights();
       break;
-      case 0x1000809://1
+      case 0x20DF8877://1
       button = 1;
-      digitalWrite(currentLight, HIGH);
+      clearLights();
       currentRoutine = 1;
+      sensorLastTime = millis();
       break;
-      case 0x1008889://2
+      case 0x20DF48B7://2
+      clearLights();
       currentRoutine = 2;
       button = 2;
       break;
-      case 0x1004849://3
+      case 0x20DFC837://3
+      clearLights();
       currentRoutine = 3;
       button = 3;
       break;
-      case 0x100C8C9://4
+      case 0x20DF28D7://4
+      clearLights();
       currentRoutine = 4;
       button = 4;
       break;
-      case 0x1002829://5
+      case 0x20DFA857://5
+      clearLights();
       currentRoutine = 5;
       button = 5;
       break;
-      case 0x100A8A9://6
+      case 0x20DF6897://6
+      clearLights();
       currentRoutine = 6;
       button = 6;
       break;
-      case 0x1006869://7
+      case 0x20DFE817://7
+      clearLights();
       currentRoutine = 7;
       button = 7;
       break;
-      case 0x100E8E9://8
+      case 0x20DF18E7://8
+      clearLights();
       currentRoutine = 8;
       button = 8;
       break;
-      case 0x1001819://9
+      case 0x20DF9867://9
       button = 9;
-      digitalWrite(currentLight, LOW);
       randomLight();
-      digitalWrite(currentLight, HIGH);
       break;
-      case 0x1009899://0
-      calibrate();
+      case 0xFFFFFFFF://NULL
+      break;
+      case 0x20DF08F7://0
       button = 0;
       break;
+      case 0x20DF807F:
+      --calib;
+      break;
+      case 0x20DF00FF:
+      ++calib;
+      break;
+      case 0x20DF22DD:
+      calib = 5;
+      break;
       default:
-      blinkFor(250);
-      button = NULL;
+      button = -128;
       //DEBUG
-      Serial.print("IR: ");
-      Serial.println(results.value, HEX);
+      Serial.print("\r\nIR: ");
+      Serial.print(results.value, HEX);
+      Serial.print("\r\nilc> ");
       break;
     }
-    Serial.print("Button: ");
-    Serial.println(button);
     irrecv.resume();
   }
 }
 
-void blinkFor(int duration) {
-  //DEBUG
-  Serial.print("BLINK: ON, ");
-  Serial.println(duration);
-  offTime = millis() + duration;
-  digitalWrite(blinkPin, HIGH);
-  blinkOn = true;
-}
-
-void checkBlink() {
-  if (millis() > offTime && blinkOn) {
-    digitalWrite(blinkPin, LOW);
-    blinkOn = false;
-    //DEBUG
-    Serial.println("BLINK: OFF");
+void serialPrompt() {
+  if (Serial.available()) {
+    serialReading = Serial.read();
+    if (serialReading == '\r') {
+      parseCommand(serialBuffer);
+      Serial.print("\r\nilc> ");
+      serialBuffer = "";
+    } else {
+      serialBuffer += serialReading;
+      Serial.print(serialReading);
+    }
   }
 }
 
-void calibrate() {
-  int reading = 1023;
-  //Calibrate A0
-  Serial.print("\rCalibrating A0");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(0);
-    if (reading < calib0) {
-      calib0 = reading;
+void parseCommand(String input) {
+  String command = input.substring(0, input.indexOf(" "));
+  String argument = input.substring(input.indexOf(" ")+1, input.length());
+  if (command.equals("help")) {
+    Serial.print("\r\nCommands:\r\n\tNo commands yet.");
+  } else if (command.equals("read")) {
+    checkThisSensor = argument.toInt();
+  } else if (command.equals("do")) {
+    currentRoutine = argument.toInt();
+    digitalWrite(lightCurrent, LOW);
+    lightCurrent = 0;
+    sensorLastTime = millis();
+  } else if (command.equals("next")) {
+    randomLight();
+  } else if (command.equals("")) {
+    if (currentRoutine == 1) {
+      randomLight();
     }
+    checkThisSensor = 16;
+  } else {
+    Serial.print("\r\nERR: \'"+command+"\' command not found.\r\n\targument: "+argument);
   }
-  //Calibrate A1
-  Serial.print("\rCalibrating A1");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(1);
-    if (reading < calib1) {
-      calib1 = reading;
-    }
-  }
-  //Calibrate A2
-  Serial.print("\rCalibrating A2");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(2);
-    if (reading < calib2) {
-      calib2 = reading;
-    }
-  }
-  //Calibrate A3
-  Serial.print("\rCalibrating A3");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(3);
-    if (reading < calib3) {
-      calib3 = reading;
-    }
-  }
-  //Calibrate A4
-  Serial.print("\rCalibrating A4");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(4);
-    if (reading < calib4) {
-      calib4 = reading;
-    }
-  }
-  //Calibrate A5
-  Serial.print("\rCalibrating A5");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(5);
-    if (reading < calib5) {
-      calib5 = reading;
-    }
-  }
-  //Calibrate A6
-  Serial.print("\rCalibrating A6");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(6);
-    if (reading < calib6) {
-      calib6 = reading;
-    }
-  }
-  //Calibrate A7
-  Serial.print("\rCalibrating A7");
-  for (int start = millis(); millis() < start+250;) {
-    reading = analogRead(7);
-    if (reading < calib7) {
-      calib7 = reading;
-    }
-  }
-  Serial.println();
-  //DEBUG
-  Serial.println("CAL: {");
-  Serial.print("  0: ");
-  Serial.println(calib0);
-  Serial.print("  1: ");
-  Serial.println(calib1);
-  Serial.print("  2: ");
-  Serial.println(calib2);
-  Serial.print("  3: ");
-  Serial.println(calib3);
-  Serial.print("  4: ");
-  Serial.println(calib4);
-  Serial.print("  5: ");
-  Serial.println(calib5);
-  Serial.print("  6: ");
-  Serial.println(calib6);
-  Serial.print("  7: ");
-  Serial.println(calib7);
-  Serial.println("}");
 }
 
-void randomLight() {
-  //DEBUG
-  currentLight = random(lowest, 9);
-  switch (currentLight) {
-    case 2:
-    currentSensor = 4;
-    currentCalib = &calib4;
-    break;
-    case 3:
-    currentSensor = 1;
-    currentCalib = &calib1;
-    break;
-    case 4:
-    currentSensor = 3;
-    currentCalib = &calib3;
-    break;
-    case 5:
-    currentSensor = 2;
-    currentCalib = &calib2;
-    break;
-    case 6:
-    currentSensor = 7;
-    currentCalib = &calib7;
-    break;
-    case 7:
-    currentSensor = 6;
-    currentCalib = &calib6;
-    break;
-    case 8:
-    currentSensor = 5;
-    currentCalib = &calib5;
-    break;
-    case 9:
-    currentSensor = 3;
-    currentCalib = &calib3;
-    break;
+void logSensor() {
+  if (currentRoutine != 0) {
+    return;
+  }
+  if (checkThisSensor != 16) {
+    sensorNow = millis();
+    if (sensorNow >= sensorLastTime + 25) {
+      sensorReading = analogRead(checkThisSensor);
+      sensorLastTime = sensorNow;
+      if (sensorReading < sensorLastReading-3) {
+        Serial.print("\r\nread: ");
+        Serial.print(sensorReading);
+        Serial.print("\r\nlast: ");
+        Serial.print(sensorLastReading);
+        Serial.print("\r\nDONE\r\n");
+        Serial.print("ilc> ");
+        sensorLastReading = 0;
+        checkThisSensor = 16;
+      }
+      sensorLastReading = sensorReading;
+    }
+    if (millis()%100 == 0) {
+      Serial.print("\rSensor A");
+      Serial.print(checkThisSensor);
+      Serial.print(": ");
+      Serial.print(sensorReading);
+    }
   }
 }
 
 void doRoutine() {
-  if (currentRoutine == 0) {
-  } else if (currentRoutine == 1) {
-    int reading = analogRead(currentSensor);
-    if (millis()%100 == 0) {
-      Serial.print("\rValue: ");
-      Serial.print(reading);
-    }
-    // if (millis()%1000 == 0) {
-    //   Serial.print("Sensor A");
-    //   Serial.print(currentSensor);
-    //   Serial.print(": ");
-    //   Serial.println(analogRead(currentSensor));
-    // }
-    if (reading < *currentCalib-2) {
-      digitalWrite(currentLight, LOW);
-      Serial.print("Turned off ");
-      Serial.println(currentLight);
-      lastLight = currentLight;
-      randomLight();
-      if (currentLight == lastLight) {
-        digitalWrite(currentLight, HIGH);
-        delay(500);
-      }
-      digitalWrite(currentLight, HIGH);
-      Serial.print("Turned on ");
-      Serial.println(currentLight);
-    }
-  } else if (currentRoutine == 2) {
-    button = 2;
-    for (int start = millis(); millis() < start+60000;) {
-      Serial.println(millis());
-      checkIr();
-      if (button == 10) {
-        currentRoutine = 0;
-        break;
-      }
-      lastLight = currentLight;
-      currentLight = random(2, 9);
-      while (currentLight == lastLight) {
-        lastLight = currentLight;
-        currentLight = random(2, 9);
-      }
-      digitalWrite(currentLight, HIGH);
-      delay(1000);
-      digitalWrite(currentLight, LOW);
-    }
-  } else if (currentRoutine == 3) {
-    for (int start = millis(); millis() < start+60000;) {
-      checkIr();
-      if (button == 10) {
-        currentRoutine = 0;
-        break;
-      }
-      lastLight = currentLight;
-      currentLight = random(2, 9);
-      while (currentLight == lastLight) {
-        lastLight = currentLight;
-        currentLight = random(2, 9);
-      }
-      digitalWrite(currentLight, HIGH);
-      delay(2000);
-      digitalWrite(currentLight, LOW);
-      delay(2000);
-    }
-  } else if (currentRoutine == 4) {
-    for (int start = millis(); millis() < start+120000;) {
-      checkIr();
-      if (button == 10) {
-        currentRoutine = 0;
-        break;
-      }
-      lastLight = currentLight;
-      currentLight = random(2, 9);
-      while (currentLight == lastLight) {
-        lastLight = currentLight;
-        currentLight = random(2, 9);
-      }
-      digitalWrite(currentLight, HIGH);
-      delay(3000);
-      digitalWrite(currentLight, LOW);
-      delay(1000);
-    }
-  } else if (currentRoutine == 5) {
-    for (int start = millis(); millis() < start+120000;) {
-      checkIr();
-      if (button == 10) {
-        currentRoutine = 0;
-        break;
-      }
-      lastLight = currentLight;
-      currentLight = random(2, 9);
-      while (currentLight == lastLight) {
-        lastLight = currentLight;
-        currentLight = random(2, 9);
-      }
-      digitalWrite(currentLight, HIGH);
-      if (currentLight == 7 || currentLight == 4) {
-        delay(200);
-      } else {
-        delay(1000);
-      }
-      digitalWrite(currentLight, LOW);
-      delay(500);
-    }
-  } else if (currentRoutine == 6) {
-    for (int start = millis(); millis() < start+120000;) {
-      checkIr();
-      if (button == 10) {
-        currentRoutine = 0;
-        break;
-      }
-      lastLight = currentLight;
-      currentLight = random(2, 9);
-      while (currentLight == lastLight) {
-        lastLight = currentLight;
-        currentLight = random(2, 9);
-      }
-      digitalWrite(currentLight, HIGH);
-      if (currentLight == 7 || currentLight == 4) {
-        delay(200);
-      } else {
-        delay(2000);
-      }
-      digitalWrite(currentLight, LOW);
-      delay(500);
-    }
-  } else if (currentRoutine == 7) {
-    for (int start = millis(); millis() < start+120000;) {
-      checkIr();
-      if (button == 10) {
-        currentRoutine = 0;
-        break;
-      }
-      lastLight = currentLight;
-      currentLight = random(2, 9);
-      while (currentLight == lastLight) {
-        lastLight = currentLight;
-        currentLight = random(2, 9);
-      }
-      digitalWrite(currentLight, HIGH);
-      if (currentLight == 7 || currentLight == 4) {
-        delay(200);
-      } else {
-        delay(500);
-      }
-      digitalWrite(currentLight, LOW);
-      delay(500);
-    }
-  } else if (currentRoutine == 8) {
-    for (int start = millis(); millis() < start+120000;) {
-      Serial.println(start+120000);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(4, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(2, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(3, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(5, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(6, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(8, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(9, HIGH);
-      delay(500);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(7, HIGH);
-      delay(2000);
-      checkIr();
-      if (button == 10) {
-        digitalWrite(2, LOW);
-        delay(10);
-        digitalWrite(3, LOW);
-        delay(10);
-        digitalWrite(4, LOW);
-        delay(10);
-        digitalWrite(5, LOW);
-        delay(10);
-        digitalWrite(6, LOW);
-        delay(10);
-        digitalWrite(7, LOW);
-        delay(10);
-        digitalWrite(8, LOW);
-        delay(10);
-        digitalWrite(9, LOW);
-        currentRoutine = 0;
-        break;
-      }
-      digitalWrite(2, LOW);
-      delay(10);
-      digitalWrite(3, LOW);
-      delay(10);
-      digitalWrite(4, LOW);
-      delay(10);
-      digitalWrite(5, LOW);
-      delay(10);
-      digitalWrite(6, LOW);
-      delay(10);
-      digitalWrite(7, LOW);
-      delay(10);
-      digitalWrite(8, LOW);
-      delay(10);
-      digitalWrite(9, LOW);
-      Serial.println(millis());
-      delay(1000);
-      Serial.println(millis());
-    }
+  switch(currentRoutine) {
+    case 1:
+    routineOne();
+    break;
+    case 2:
+    routineTwo();
+    break;
+    case 3:
+    routineThree();
+    break;
+    case 4:
+    routineFour();
+    break;
+    case 5:
+    routineFive();
+    break;
+    case 6:
+    routineSix();
+    break;
+    case 7:
+    routineSeven();
+    break;
+    case 8:
+    routineEight();
+    break;
   }
 }
 
-void checkSerial() {
-  if (Serial.available() > 0) {
-    serialReading = Serial.read();
-    if (serialReading == '\r') {
+void routineOne() {
+  if (lightCurrent == 0) {
+    randomLight();
+  }
+  sensorNow = millis();
+  if (sensorNow >= sensorLastTime + 25) {
+    (void)analogRead(sensorCurrent);
+    readings[0] = analogRead(sensorCurrent);
+    (void)analogRead(sensorCurrent);
+    readings[1] = analogRead(sensorCurrent);
+    (void)analogRead(sensorCurrent);
+    readings[2] = analogRead(sensorCurrent);
+    (void)analogRead(sensorCurrent);
+    readings[3] = analogRead(sensorCurrent);
+    (void)analogRead(sensorCurrent);
+    readings[4] = analogRead(sensorCurrent);
+    sensorReading = 0;
+    for(int i = 0; i < 5; ++i) {
+      // Serial.print(i+1);
+      // Serial.print(":");
+      // Serial.print(readings[i]);
+      // Serial.print("\t");
+      sensorReading += readings[i];
+    }
+    sensorReading = sensorReading / 5;
+    Serial.print("\r");
+    Serial.print(calib);
+    Serial.print("        ");
+    // Serial.println();
+    // Serial.print("avg");
+    // Serial.print(sensorCurrent);
+    // Serial.print(": ");
+    // Serial.println(sensorReading);
+    if (sensorReading < sensorLastReading - calib) {
       Serial.println();
-      serialBuffer[serialIndex] = '\0';
-      parseCommand(serialBuffer);
-      serialBuffer[0] = '\0';
-      serialIndex = 0;
-    } else {
-      Serial.print(serialReading);
-      serialBuffer[serialIndex] = serialReading;
-      serialIndex++;
+      randomLight();
+    }
+    sensorLastTime = sensorNow;
+    sensorLastReading = sensorReading;
+  }
+  // if (sensorNow%100 == 0) {
+  //   Serial.print("\rSensor A");
+  //   Serial.print(sensorCurrent);
+  //   Serial.print(": ");
+  //   Serial.print(sensorReading);
+  // }
+}
+
+void routineTwo() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 60000;
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    do {
+      randomLight();
+    } while (lightCurrent == lightLastOn);
+    lightLastOn = lightCurrent;
+    routineLightEnd = millis() + 1000;
+    routineLightOn = 1;
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = 0;
     }
   }
 }
 
-void parseCommand(char command[256]) {
+void routineThree() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 60000;
+    lightCurrent = random(lightFirst, lightLast+1);
+    switch(lightCurrent) {
+      case 2:
+      sensorCurrent = 1;
+      break;
+      case 3:
+      sensorCurrent = 0;
+      break;
+      case 4:
+      sensorCurrent = 3;
+      break;
+      case 5:
+      sensorCurrent = 6;
+      break;
+      case 6:
+      sensorCurrent = 4;
+      break;
+      case 7:
+      sensorCurrent = 2;
+      break;
+      case 8:
+      sensorCurrent = 7;
+      break;
+      case 9:
+      sensorCurrent = 5;
+      break;
+    }
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    if (millis() > routineLightEndEnd) {
+      digitalWrite(lightCurrent, HIGH);
+      lightLastOn = lightCurrent;
+      routineLightEnd = millis() + 2000;
+      routineLightOn = 1;
+    }
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = 0;
+      routineLightEndEnd = millis() + 2000;
+      digitalWrite(lightCurrent, LOW);
+      do {
+        lightCurrent = random(lightFirst, lightLast+1);
+        switch(lightCurrent) {
+          case 2:
+          sensorCurrent = 1;
+          break;
+          case 3:
+          sensorCurrent = 0;
+          break;
+          case 4:
+          sensorCurrent = 3;
+          break;
+          case 5:
+          sensorCurrent = 6;
+          break;
+          case 6:
+          sensorCurrent = 4;
+          break;
+          case 7:
+          sensorCurrent = 2;
+          break;
+          case 8:
+          sensorCurrent = 7;
+          break;
+          case 9:
+          sensorCurrent = 5;
+          break;
+        }
+      } while (lightCurrent == lightLastOn);
+    }
+  }
+}
+
+void routineFour() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 120000;
+    lightCurrent = random(lightFirst, lightLast+1);
+    switch(lightCurrent) {
+      case 2:
+      sensorCurrent = 1;
+      break;
+      case 3:
+      sensorCurrent = 0;
+      break;
+      case 4:
+      sensorCurrent = 3;
+      break;
+      case 5:
+      sensorCurrent = 6;
+      break;
+      case 6:
+      sensorCurrent = 4;
+      break;
+      case 7:
+      sensorCurrent = 2;
+      break;
+      case 8:
+      sensorCurrent = 7;
+      break;
+      case 9:
+      sensorCurrent = 5;
+      break;
+    }
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    if (millis() > routineLightEndEnd) {
+      digitalWrite(lightCurrent, HIGH);
+      lightLastOn = lightCurrent;
+      routineLightEnd = millis() + 3000;
+      routineLightOn = 1;
+    }
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = 0;
+      routineLightEndEnd = millis() + 1000;
+      digitalWrite(lightCurrent, LOW);
+      do {
+        lightCurrent = random(lightFirst, lightLast+1);
+        switch(lightCurrent) {
+          case 2:
+          sensorCurrent = 1;
+          break;
+          case 3:
+          sensorCurrent = 0;
+          break;
+          case 4:
+          sensorCurrent = 3;
+          break;
+          case 5:
+          sensorCurrent = 6;
+          break;
+          case 6:
+          sensorCurrent = 4;
+          break;
+          case 7:
+          sensorCurrent = 2;
+          break;
+          case 8:
+          sensorCurrent = 7;
+          break;
+          case 9:
+          sensorCurrent = 5;
+          break;
+        }
+      } while (lightCurrent == lightLastOn);
+    }
+  }
+}
+
+void routineFive() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 120000;
+    lightCurrent = random(lightFirst, lightLast+1);
+    switch(lightCurrent) {
+      case 2:
+      sensorCurrent = 1;
+      break;
+      case 3:
+      sensorCurrent = 0;
+      break;
+      case 4:
+      sensorCurrent = 3;
+      break;
+      case 5:
+      sensorCurrent = 6;
+      break;
+      case 6:
+      sensorCurrent = 4;
+      break;
+      case 7:
+      sensorCurrent = 2;
+      break;
+      case 8:
+      sensorCurrent = 7;
+      break;
+      case 9:
+      sensorCurrent = 5;
+      break;
+    }
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    if (millis() > routineLightEndEnd) {
+      digitalWrite(lightCurrent, HIGH);
+      lightLastOn = lightCurrent;
+      if (lightCurrent == 3 || lightCurrent == 4) {
+        routineLightEnd = millis() + 250;
+      } else {
+        routineLightEnd = millis() + 1000;
+      }
+      routineLightOn = 1;
+    }
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = 0;
+      routineLightEndEnd = millis() + 500;
+      digitalWrite(lightCurrent, LOW);
+      do {
+        lightCurrent = random(lightFirst, lightLast+1);
+        switch(lightCurrent) {
+          case 2:
+          sensorCurrent = 1;
+          break;
+          case 3:
+          sensorCurrent = 0;
+          break;
+          case 4:
+          sensorCurrent = 3;
+          break;
+          case 5:
+          sensorCurrent = 6;
+          break;
+          case 6:
+          sensorCurrent = 4;
+          break;
+          case 7:
+          sensorCurrent = 2;
+          break;
+          case 8:
+          sensorCurrent = 7;
+          break;
+          case 9:
+          sensorCurrent = 5;
+          break;
+        }
+      } while (lightCurrent == lightLastOn);
+    }
+  }
+}
+
+void routineSix() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 120000;
+    lightCurrent = random(lightFirst, lightLast+1);
+    switch(lightCurrent) {
+      case 2:
+      sensorCurrent = 1;
+      break;
+      case 3:
+      sensorCurrent = 0;
+      break;
+      case 4:
+      sensorCurrent = 3;
+      break;
+      case 5:
+      sensorCurrent = 6;
+      break;
+      case 6:
+      sensorCurrent = 4;
+      break;
+      case 7:
+      sensorCurrent = 2;
+      break;
+      case 8:
+      sensorCurrent = 7;
+      break;
+      case 9:
+      sensorCurrent = 5;
+      break;
+    }
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    if (millis() > routineLightEndEnd) {
+      digitalWrite(lightCurrent, HIGH);
+      lightLastOn = lightCurrent;
+      if (lightCurrent == 3 || lightCurrent == 4) {
+        routineLightEnd = millis() + 250;
+      } else {
+        routineLightEnd = millis() + 2000;
+      }
+      routineLightOn = 1;
+    }
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = 0;
+      routineLightEndEnd = millis() + 500;
+      digitalWrite(lightCurrent, LOW);
+      do {
+        lightCurrent = random(lightFirst, lightLast+1);
+        switch(lightCurrent) {
+          case 2:
+          sensorCurrent = 1;
+          break;
+          case 3:
+          sensorCurrent = 0;
+          break;
+          case 4:
+          sensorCurrent = 3;
+          break;
+          case 5:
+          sensorCurrent = 6;
+          break;
+          case 6:
+          sensorCurrent = 4;
+          break;
+          case 7:
+          sensorCurrent = 2;
+          break;
+          case 8:
+          sensorCurrent = 7;
+          break;
+          case 9:
+          sensorCurrent = 5;
+          break;
+        }
+      } while (lightCurrent == lightLastOn);
+    }
+  }
+}
+
+void routineSeven() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 120000;
+    lightCurrent = random(lightFirst, lightLast+1);
+    switch(lightCurrent) {
+      case 2:
+      sensorCurrent = 1;
+      break;
+      case 3:
+      sensorCurrent = 0;
+      break;
+      case 4:
+      sensorCurrent = 3;
+      break;
+      case 5:
+      sensorCurrent = 6;
+      break;
+      case 6:
+      sensorCurrent = 4;
+      break;
+      case 7:
+      sensorCurrent = 2;
+      break;
+      case 8:
+      sensorCurrent = 7;
+      break;
+      case 9:
+      sensorCurrent = 5;
+      break;
+    }
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    if (millis() > routineLightEndEnd) {
+      digitalWrite(lightCurrent, HIGH);
+      lightLastOn = lightCurrent;
+      if (lightCurrent == 3 || lightCurrent == 4) {
+        routineLightEnd = millis() + 250;
+      } else {
+        routineLightEnd = millis() + 500;
+      }
+      routineLightOn = 1;
+    }
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = 0;
+      routineLightEndEnd = millis() + 500;
+      digitalWrite(lightCurrent, LOW);
+      do {
+        lightCurrent = random(lightFirst, lightLast+1);
+        switch(lightCurrent) {
+          case 2:
+          sensorCurrent = 1;
+          break;
+          case 3:
+          sensorCurrent = 0;
+          break;
+          case 4:
+          sensorCurrent = 3;
+          break;
+          case 5:
+          sensorCurrent = 6;
+          break;
+          case 6:
+          sensorCurrent = 4;
+          break;
+          case 7:
+          sensorCurrent = 2;
+          break;
+          case 8:
+          sensorCurrent = 7;
+          break;
+          case 9:
+          sensorCurrent = 5;
+          break;
+        }
+      } while (lightCurrent == lightLastOn);
+    }
+  }
+}
+
+void routineEight() {
+  if (routineEnd == 0) {
+    routineEnd = millis() + 120000;
+    lightCurrent = 3;
+  }
+  if (millis() > routineEnd) {
+    clearLights();
+    routineEnd = 0;
+    currentRoutine = 0;
+    return;
+  }
+  if (!routineLightOn) {
+    if (millis() > routineLightEndEnd) {
+      digitalWrite(lightCurrent, HIGH);
+      routineLightEnd = millis() + 500;
+      routineLightOn = true;
+    }
+  } else {
+    if (millis() > routineLightEnd) {
+      routineLightOn = false;
+      if (lightCurrent == 4) {
+        clearLights();
+        delay(2000);
+        lightCurrent = 0;
+      } else {
+        switch(lightCurrent) {
+          case 3:
+          lightCurrent = 2;
+          break;
+          case 2:
+          lightCurrent = 5;
+          break;
+          case 5:
+          lightCurrent = 6;
+          break;
+          case 6:
+          lightCurrent = 7;
+          break;
+          case 7:
+          lightCurrent = 8;
+          break;
+          case 8:
+          lightCurrent = 9;
+          break;
+          case 9:
+          lightCurrent = 4;
+          break;
+          case 0:
+          lightCurrent = 3;
+          break;
+        }
+      }
+      routineLightEndEnd = millis();
+      digitalWrite(lightCurrent, LOW);
+    }
+  }
+}
+
+void randomLight() {
+  Serial.print("sensorReading: ");
+  Serial.println(sensorReading);
+  Serial.print("sensorLastReading: ");
+  Serial.println(sensorLastReading);
+  digitalWrite(lightCurrent, LOW);
+  lightCurrent = random(lightFirst, lightLast+1);
+  switch(lightCurrent) {
+    case 2:
+    sensorCurrent = 1;
+    break;
+    case 3:
+    sensorCurrent = 0;
+    break;
+    case 4:
+    sensorCurrent = 3;
+    break;
+    case 5:
+    sensorCurrent = 6;
+    break;
+    case 6:
+    sensorCurrent = 4;
+    break;
+    case 7:
+    sensorCurrent = 2;
+    break;
+    case 8:
+    sensorCurrent = 7;
+    break;
+    case 9:
+    sensorCurrent = 5;
+    break;
+  }
+  Serial.print("\r\nSwitched light to ");
+  Serial.print(lightCurrent);
+  Serial.print("\r\n");
+  delay(50);
+  digitalWrite(lightCurrent, HIGH);
+  delay(25);
+  sensorLastReading = 0;
+}
+
+void clearLights() {
+  Serial.println("clearing...");
+  routineEnd = 0;
+  lightCurrent = 0;
+  for (int i = 2; i < 10; i++) {
+    digitalWrite(i, LOW);
+    delay(10);
+  }
+}
+
+void checkVoltage() {
+  if (millis()%1000 == 0) {
+    voltage = analogRead(8)*5.0/1023.0*(R1+R2)/R2;
+    Serial.print("\rV: ");
+    Serial.print(voltage);
+    if (voltage >= 13.8) {
+      digitalWrite(greenLed, HIGH);
+      digitalWrite(yellowLed, HIGH);
+      digitalWrite(redLed, HIGH);
+    } else if (voltage >= 11.9 && voltage < 13.8) {
+      digitalWrite(greenLed, HIGH);
+      digitalWrite(yellowLed, LOW);
+      digitalWrite(redLed, LOW);
+    } else if (voltage < 11.9 && voltage >= 11.0) {
+      digitalWrite(greenLed, LOW);
+      digitalWrite(yellowLed, HIGH);
+      digitalWrite(redLed, LOW);
+    } else if (voltage < 11.0) {
+      digitalWrite(greenLed, LOW);
+      digitalWrite(yellowLed, LOW);
+      digitalWrite(redLed, HIGH);
+    }
+  }
 }
