@@ -20,7 +20,7 @@ uint8_t currentLight = NULL;
 uint8_t lastLight = NULL;
 uint8_t currentSensor = NULL;
 int * currentCalib = NULL;
-uint8_t currentRoutine = 0;
+uint8_t currentRoutine = 1;
 //PINs
 int calib0 = 1023;
 int calib1 = 1023;
